@@ -20,7 +20,7 @@ One self-contained HTML file with no dependencies:
 
 - HTML5 Canvas 2D for all graphics, drawn in code (no image files)
 - Vanilla JavaScript for the game loop, physics and tile collisions
-- Web Audio API for synthesised sound effects (no audio files)
+- Web Audio API for synthesised sound effects and background music (no audio files)
 - `localStorage` for the best score
 
 ## Hosting

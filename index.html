@@ -63,6 +63,7 @@ const KEYMAP = {
 let paused = false, muted = false;
 
 window.addEventListener('keydown', e => {
+  ensureAudio();
   const k = KEYMAP[e.code];
   if (k) {
     if (!keys[k]) pressed[k] = true;
@@ -80,13 +81,13 @@ window.addEventListener('keyup', e => {
 });
 window.addEventListener('blur', () => { keys.left = keys.right = keys.jump = keys.bark = false; });
 
-cv.addEventListener('pointerdown', e => { pressed.start = true; e.preventDefault(); });
+cv.addEventListener('pointerdown', e => { ensureAudio(); pressed.start = true; e.preventDefault(); });
 window.addEventListener('touchstart', () => document.body.classList.add('touch'), { passive: true });
 if (window.matchMedia && window.matchMedia('(pointer:coarse)').matches) document.body.classList.add('touch');
 
 document.querySelectorAll('.btn').forEach(b => {
   const k = b.dataset.k;
-  const down = e => { e.preventDefault(); if (!keys[k]) pressed[k] = true; keys[k] = true; b.classList.add('on');
+  const down = e => { e.preventDefault(); ensureAudio(); if (!keys[k]) pressed[k] = true; keys[k] = true; b.classList.add('on');
     if (k === 'jump') pressed.start = true; };
   const up = e => { e.preventDefault(); keys[k] = false; b.classList.remove('on'); };
   b.addEventListener('pointerdown', down);
@@ -123,9 +124,98 @@ const sfx = {
   hurt: () => tone(300, 0.3, 'sawtooth', 0.08, -220),
   die: () => [392, 330, 262, 196].forEach((f, i) => tone(f, 0.16, 'triangle', 0.1, 0, i * 0.15)),
   check: () => { tone(523, 0.1, 'triangle', 0.1); tone(784, 0.2, 'triangle', 0.1, 0, 0.1); },
-  win: () => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, 0.16, 'square', 0.06, 0, i * 0.13)),
+  win: () => fanfare(false),
+  finale: () => fanfare(true),
   life: () => [659, 784, 1319].forEach((f, i) => tone(f, 0.12, 'triangle', 0.1, 0, i * 0.1))
 };
+
+/* ---------- background music (original chiptune loop, synthesised) ---------- */
+// Browsers only allow sound after the first key press or tap, so audio starts then.
+function ensureAudio() {
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') ac.resume();
+  } catch (err) { /* audio not available */ }
+}
+const SONG = {
+  // 8 bars of 8 eighth-notes each, as MIDI note numbers (0 = rest)
+  lead: [76,0,79,0,84,0,79,76,  77,0,81,0,84,81,77,0,  74,0,79,0,83,0,79,74,  76,79,84,0,79,0,0,0,
+         81,0,84,0,88,0,84,81,  77,0,81,0,84,0,81,0,   79,81,83,0,86,0,83,79, 84,0,79,0,84,0,0,0],
+  roots: [48, 41, 43, 48, 45, 41, 43, 48],
+  // per level: beats per minute, key shift in semitones, lead waveform
+  moods: [{ bpm: 150, shift: 0, wave: 'square' }, { bpm: 160, shift: 2, wave: 'square' }, { bpm: 132, shift: -3, wave: 'triangle' }]
+};
+const music = { step: 0, next: 0, gain: null, noise: null, jingle: null };
+const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+function mNote(freq, t, dur, type, vol, slideTo, dest) {
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vol, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  o.connect(g); g.connect(dest || music.gain);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+function mHat(t, vol) {
+  const src = ac.createBufferSource(), g = ac.createGain(), f = ac.createBiquadFilter();
+  src.buffer = music.noise; f.type = 'highpass'; f.frequency.value = 6000;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0008, t + 0.05);
+  src.connect(f); f.connect(g); g.connect(music.gain);
+  src.start(t); src.stop(t + 0.06);
+}
+// Victory music: a short fanfare when Bruno reaches the doghouse, and a bigger one for finishing the game.
+// Each note is [MIDI note, start beat, length in beats, voice] where voice 0 = lead, 1 = harmony, 2 = bass.
+const FANFARE = {
+  clear: [[72,0,1,0],[76,1,1,0],[79,2,1,0],[84,3,2,0],[81,5,1,0],[83,6,1,0],[84,7,1,0],[86,8,2,0],[88,10,5,0],
+          [79,3,2,1],[79,8,2,1],[84,10,5,1],[79,10,5,1],
+          [48,0,3,2],[53,3,2,2],[55,5,3,2],[55,8,2,2],[48,10,5,2]],
+  finale: [[72,0,1,0],[76,1,1,0],[79,2,1,0],[84,3,1,0],[88,4,1,0],[91,5,3,0],[89,8,1,0],[88,9,1,0],[86,10,2,0],[91,12,2,0],[96,14,8,0],
+           [84,5,3,1],[79,5,3,1],[83,10,2,1],[86,12,2,1],[88,14,8,1],[84,14,8,1],
+           [48,0,5,2],[55,5,3,2],[53,8,2,2],[55,10,4,2],[48,14,8,2],[36,14,8,2]]
+};
+function fanfare(grand) {
+  ensureAudio();
+  if (!ac || muted) return;
+  try {
+    const out = ac.createGain(); out.connect(ac.destination); music.jingle = out;
+    const t0 = ac.currentTime + 0.06, beat = 0.13;
+    const voices = [['square', 0.05], ['square', 0.028], ['triangle', 0.11]];
+    for (const [m, start, len, v] of (grand ? FANFARE.finale : FANFARE.clear)) {
+      mNote(hz(m), t0 + start * beat, len * beat * 1.15, voices[v][0], voices[v][1], 0, out);
+    }
+    music.step = 0;                                        // the loop restarts from the top afterwards
+  } catch (err) { /* audio not available */ }
+}
+function musicTick() {
+  if (!ac || ac.state !== 'running') return;
+  try {
+    if (!music.gain) {
+      music.gain = ac.createGain(); music.gain.connect(ac.destination);
+      const len = Math.floor(ac.sampleRate * 0.1), buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      music.noise = buf;
+    }
+    // the loop steps aside while a victory fanfare plays
+    const fanfareOn = (state === 'clear' && stateT < 2.4) || (state === 'win' && stateT < 3.6);
+    const quiet = muted || fanfareOn || (paused && state === 'play');
+    if (music.jingle) music.jingle.gain.setTargetAtTime(muted ? 0 : 1, ac.currentTime, 0.03);
+    music.gain.gain.setTargetAtTime(quiet ? 0 : 1, ac.currentTime, 0.03);
+    const mood = SONG.moods[state === 'title' ? 0 : levelIndex % SONG.moods.length];
+    const stepDur = 30 / mood.bpm;                       // one eighth-note
+    if (music.next < ac.currentTime) music.next = ac.currentTime + 0.05;
+    while (music.next < ac.currentTime + 0.2) {
+      const i = music.step, t = music.next, inBar = i % 8, root = SONG.roots[i >> 3] + mood.shift;
+      const m = SONG.lead[i];
+      if (m) mNote(hz(m + mood.shift), t, stepDur * 1.6, mood.wave, mood.wave === 'square' ? 0.03 : 0.06);
+      if (inBar % 2 === 0) mNote(hz(root + [0, 12, 7, 12][inBar / 2]), t, stepDur * 1.5, 'triangle', 0.09);
+      if (inBar === 0 || inBar === 4) mNote(140, t, 0.11, 'sine', 0.12, 45);   // kick
+      mHat(t, inBar % 2 ? 0.035 : 0.015);
+      music.next += stepDur; music.step = (i + 1) % SONG.lead.length;
+    }
+  } catch (err) { /* audio not available */ }
+}
+setInterval(musicTick, 40);
 
 /* ---------- levels ---------- */
 const THEMES = {
@@ -495,7 +585,7 @@ function tick(dt) {
     stateT += dt;
     if (stateT > 1 && pressed.start) {
       if (levelIndex + 1 < LEVELS.length) startLevel(levelIndex + 1);
-      else { state = 'win'; stateT = 0; saveBest(); sfx.win(); }
+      else { state = 'win'; stateT = 0; saveBest(); sfx.finale(); }
     }
   } else if (state === 'over') {
     stateT += dt;
